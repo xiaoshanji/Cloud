@@ -32,7 +32,7 @@
 
 ​		依赖分析、服务的健康状态、服务的流量管理、路由及安全策略、服务的`SLA`及最重要的`metrics`统计数据。
 
-![](image/QQ截图20220619135210.png)
+![](image/QQ截图20220619225732.png)
 
 ​		`Provider APP`：服务提供者。
 
@@ -66,7 +66,7 @@ startup.cmd -m standalone
 
 ​				服务注册中心需要调用服务实例的健康检查`API`来验证它是否能够处理请求。
 
-![](image/QQ截图20220619161016.png)
+![](image/QQ截图20220619225812.png)
 
 ​		`ServiceRegistry`，它是`Spring Cloud`提供的服务注册的标准。集成到`Spring Cloud`中实现服务注册的组件，都会实现该接口：
 
@@ -125,7 +125,7 @@ public class AutoServiceRegistrationAutoConfiguration {
 }
 ```
 
-![](image/QQ截图20220619162505.png)
+![](image/QQ截图20220619230100.png)
 
 ​		`ApplicationListener`是`Spring`中的事件监听机制，用于监听某个指定的事件。而`AbstractAutoServiceRegistration`实现了该抽象方法，并且监听`WebServerInitializedEvent`事件`(`当`Webserver`初始化完成之后`)`：
 
@@ -489,7 +489,7 @@ public ServiceInfo listInstance(String namespaceId, String serviceName, Subscrib
 
 ​				服务消费者收到请求之后，使用`ServiceInfoHolder`中提供的`processServiceInfo`解析消息，并更新本地服务地址列表。
 
-![](image/QQ截图20220619221958.png)
+![](image/QQ截图20220619230154.png)
 
 
 
