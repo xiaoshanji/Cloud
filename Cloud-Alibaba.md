@@ -56,7 +56,7 @@ startup.cmd -m standalone
 
 
 
-## 注册中心原理
+## 注册中心
 
 ​		服务注册的功能主要体现在：
 
@@ -263,7 +263,7 @@ public void addBeatInfo(String serviceName, BeatInfo beatInfo) {
 
 
 
-## 服务注册原理
+### 服务注册原理
 
 ​		对于服务注册，`Nacos`对外提供的服务接口请求地址为`nacos/vl/ns/instance`，实现代码在`nacos-naming`模块下的`InstanceController`类中：
 
@@ -354,11 +354,11 @@ private void putServiceAndInit(Service service) throws NacosException {
 }
 ```
 
-![](image/QQ截图20220619183642.png)
+![](image/QQ截图20220621154217.png)
 
 
 
-## 服务提供者地址查询
+### 服务提供者地址查询
 
 ```java
 // InstanceController 类
@@ -479,7 +479,7 @@ public ServiceInfo listInstance(String namespaceId, String serviceName, Subscrib
 
 
 
-## 服务地址动态感知
+### 服务地址动态感知
 
 ​		`Nacos`客户端有一个`ServiceInfoUpdateService`类，它的功能是实现服务的动态更新，基本原理是：
 
@@ -494,4 +494,631 @@ public ServiceInfo listInstance(String namespaceId, String serviceName, Subscrib
 
 
 
+
+## 配置中心
+
+​		`Spring Cloud Alibaba Nacos Config`从`Nacos Config Server`中加载配置时，会匹配`Data ID`。在`SpringCloud Nacos`的实现中，`Data ID`默认规则是
+
+`$(prefix]-${spring.profile.active}.${file-extension}`。
+
+​		在默认情况下，会去`Nacos`服务器上加载`Data ID`以`${spring.application.name}.${file-extension : properties}`为前缀的基础配置。比如在`bootstrap`
+
+`.properties`文件中配置了属性`spring.application.name=spring-cloud-nacos-config-sample`，在不通过`spring.cloud.nacos.config.prefix`指定`Data ID`前缀
+
+时，默认会读取`Nacos Config Server`中`Data ID`为`spring-cloud-nacos-config-sample.properties`的配置信息。如果明确指定了
+
+`spring.cloudnacos.config.prefix=example`属性，则会加载`Data ID=example`的配置。
+
+​		`Nacos Config`也提供了`YAML`配置格式的支持，只需要在`bootstrap.properties`中声明`spring.cloud.nacos.config.file-extension=yaml`。
+
+
+
+​		在`Spring Cloud Alibaba Nacos Config`中加载`Nacos Config Server`中的配置时，不仅加载了`Data ID`以`$(spring.application.name}.$file-extension: `
+
+`properties}`为前缀的基础配置，还会加载`Data ID`为`$[spring.application.name}-$[profile}.$[{file-extension:properties}`的基础配置，这样的方式为不同
+
+环境的切换提供了非常好的支持。
+
+
+
+​		`Nacos`提供的数据模型`Key`是由三元组来进行唯一确定的。
+
+![](image/QQ截图20220620173725.png)
+
+​		`Namespace`用于解决多环境及多租户数据的隔离问题，在多套不同的环境下，可以根据指定的环境创建不同的`Namespace`，实现多环境的隔离，或者在多用户
+
+的场景中，每个用户可以维护自己的`Namespace`,实现每个用户的配置数据和注册数据的隔离。需要注意的是，在不同的`Namespace`下，可以存在相同的`Group`或
+
+`Datald`。
+
+​		`Group`是`Nacos`中用来实现`Data ID`分组管理的机制，它可以实现不同`Service/Datald`的隔离。对于`Group`的用法，其实没有固定的规定，它可以实现不同
+
+环境下的`Datald`的分组也可以实现不同应用或者组件下使用相同配置类型的分组。
+
+
+
+​		`Nacos`的配置监听采用的是`Pull`模式，但并不是简单的`Pull`，而是一种长轮询机制，它结合`Push`和`Pull`两者的优势。客户端采用长轮询的方式定时发起
+
+`Pull`请求，去检查服务端配置信息是否发生了变更，如果发生了变更，则客户端会根据变更的数据获得最新的配置。所谓长轮询，是客户端发起轮询请求之后，
+
+服务端如果有配置发生变更，就直接返回。
+
+![](image/QQ截图20220620175601.png)
+
+​		如果客户端发起`Pull`请求后，发现服务端的配置和客户端的配置是保持一致的，那么服务端会先`Hold`住这个请求，也就是服务端拿到这个连接之后在指定
+
+的时间段内一直不返回结果，直到这段时间内配置发生变化，服务端会把原来`Hold`住的请求进行返回。
+
+​		`Nacos`服务端收到请求之后，先检查配置是否发生了变更，如果没有，则设置一个定时任务，延期`29.5s`执行，并且把当前的客户端长轮询连接加入
+
+`allSubs`队列。这时候有两种方式触发该连接结果的返回：
+
+​				第一种是在等待`29.5s`后触发自动检查机制，这时候不管配置有没有发生变化，都会把结果返回客户端。而`29.5s`就是这个长连接保持的时间。
+
+​				第二种是在`29.5s`内任意一个时刻，通过`Nacos Dashboard`或者`API`的方式对配置进行了修改，这会触发一个事件机制，监听到该事件的任务会遍历
+
+​		`allSubs`队列，找到发生变更的配置项对应的`ClientLongPolling`任务，将变更的数据通过该任务中的连接进行返回，就完成了一次推送操作。
+
+![](image/QQ截图20220620175959.png)
+
+
+
+### 配置加载
+
+​		在`Spring Boot`启动时，在`SpringApplication.run`方法中会进行环境准备工作，也就是`prepareEnvironment`方法：
+
+```java
+// SpringApplication 类
+public ConfigurableApplicationContext run(String... args) {
+		...
+		try {
+			ApplicationArguments applicationArguments = new DefaultApplicationArguments(args);
+			ConfigurableEnvironment environment = prepareEnvironment(listeners, applicationArguments);
+			...
+		}
+		catch (Throwable ex) {
+			handleRunFailure(context, ex, listeners);
+			throw new IllegalStateException(ex);
+		}
+   		...
+}
+
+private ConfigurableEnvironment prepareEnvironment(SpringApplicationRunListeners listeners,
+			ApplicationArguments applicationArguments) {
+		...
+		listeners.environmentPrepared(environment);
+		...
+		return environment;
+}
+```
+
+​		在`prepareEnvironment`方法中，会发布一个`ApplicationEnvironmentPreparedEvent`事件，`BootstrapApplicationListener`会收到该事件并进行处理：
+
+```java
+// BootstrapApplicationListener 类
+public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
+		...
+		if (context == null) {
+			context = bootstrapServiceContext(environment, event.getSpringApplication(),
+					configName);
+			event.getSpringApplication()
+					.addListeners(new CloseContextOnFailureApplicationListener(context));
+		}
+		...
+}
+
+private ConfigurableApplicationContext bootstrapServiceContext(
+			ConfigurableEnvironment environment, final SpringApplication application,
+			String configName) {
+		...
+		builder.sources(BootstrapImportSelectorConfiguration.class); // 自动装配的实现
+		...
+}
+```
+
+​		`BootstrapImportSelectorConfiguration`是一个配置类，该配置类用`@Import`导入了一个`BootstrapImportSelector`来实现自动装配的过程：
+
+```java
+// BootstrapImportSelector 类
+public String[] selectImports(AnnotationMetadata annotationMetadata) {
+		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+		// Use names and ensure unique to protect against duplicates
+		List<String> names = new ArrayList<>(SpringFactoriesLoader
+				.loadFactoryNames(BootstrapConfiguration.class, classLoader));
+		...
+}
+```
+
+​		上面的方法会加载两个配置类：`NacosConfigBootstrapConfiguration`与`PropertySourceBootstrapConfiguration`。
+
+
+
+​		当上面的工作完成后，将进行配置的加载：
+
+```java
+// SpringApplication 类
+public ConfigurableApplicationContext run(String... args) {
+		...
+		try {
+			ApplicationArguments applicationArguments = new DefaultApplicationArguments(args);
+             // 加载配置类
+			ConfigurableEnvironment environment = prepareEnvironment(listeners, applicationArguments);
+			...
+             // 准备刷新上下文
+			prepareContext(context, environment, listeners, applicationArguments, printedBanner);
+			...
+		}
+		catch (Throwable ex) {
+			handleRunFailure(context, ex, listeners);
+			throw new IllegalStateException(ex);
+		}
+		...
+}
+
+private void prepareContext(ConfigurableApplicationContext context, ConfigurableEnvironment environment,
+			SpringApplicationRunListeners listeners, ApplicationArguments applicationArguments, Banner printedBanner) {
+		...
+		applyInitializers(context);
+		...
+}
+
+protected void applyInitializers(ConfigurableApplicationContext context) {
+		for (ApplicationContextInitializer initializer : getInitializers()) {
+			Class<?> requiredType = GenericTypeResolver.resolveTypeArgument(initializer.getClass(),
+					ApplicationContextInitializer.class);
+			Assert.isInstanceOf(requiredType, context, "Unable to call initializer.");
+			initializer.initialize(context);
+		}
+}
+```
+
+​		在上面加载的配置类`PropertySourceBootstrapConfiguration`实现了`ApplicationContextInitializer`接口：
+
+```java
+// PropertySourceBootstrapConfiguration 类
+public void initialize(ConfigurableApplicationContext applicationContext) {
+		...
+		ConfigurableEnvironment environment = applicationContext.getEnvironment();
+		for (PropertySourceLocator locator : this.propertySourceLocators) {
+			Collection<PropertySource<?>> source = locator.locateCollection(environment); // locateCollection 最终会调用 locate 方法
+			...
+		}
+		...
+}
+```
+
+​		`PropertySourceLocator`接口的主要作用是实现应用外部化配置可动态加载，而`NacosPropertySourceLocator`实现了该接口：
+
+```java
+// NacosPropertySourceLocator 类
+public PropertySource<?> locate(Environment env) {
+		nacosConfigProperties.setEnvironment(env);
+    	//ConfigService 对象是 Nacos 客户端提供的用于访问实现配置中心基本操作的类
+		ConfigService configService = nacosConfigManager.getConfigService();
+		...
+		loadSharedConfiguration(composite);
+		loadExtConfiguration(composite);
+		loadApplicationConfiguration(composite, dataIdPrefix, nacosConfigProperties, env);
+		return composite;
+}
+```
+
+​		`loadApplicationConfiguration`调用`loadNacosDataIfPresent`，然后调用`loadNacosPropertySource`方法，接着会调用`NacosPropertySourceBuilder`的
+
+`build`方法，`build`接着调用`loadNacosData`方法：
+
+```java
+// NacosPropertySourceBuilder 类
+private List<PropertySource<?>> loadNacosData(String dataId, String group,
+			String fileExtension) {
+		String data = null;
+		try {
+			data = configService.getConfig(dataId, group, timeout); 
+			...
+			return NacosDataParserHandler.getInstance().parseNacosData(dataId, data,
+					fileExtension); // // 从 Nacos 配置中心上加载配置进行填充的
+		}
+		catch (NacosException e) {
+			log.error("get data from Nacos error,dataId:{} ", dataId, e);
+		}
+		catch (Exception e) {
+			log.error("parse data from Nacos error,dataId:{},data:{}", dataId, data, e);
+		}
+		return Collections.emptyList();
+}
+```
+
+
+
+### 事件监听
+
+​		`NacosContextRefresher`类实现了一个`ApplicationReadyEvent`事件监听，也就是在上下文已经准备完毕的时候会触发这个事件：
+
+```java
+// NacosContextRefresher 类
+public void onApplicationEvent(ApplicationReadyEvent event) {
+		// many Spring context
+		if (this.ready.compareAndSet(false, true)) {
+			this.registerNacosListenersForApplications(); // 监听事件的注册
+		}
+}
+
+private void registerNacosListenersForApplications() {
+		if (isRefreshEnabled()) {
+			for (NacosPropertySource propertySource : NacosPropertySourceRepository
+					.getAll()) {
+				if (!propertySource.isRefreshable()) {
+					continue;
+				}
+				String dataId = propertySource.getDataId();
+				registerNacosListener(propertySource.getGroup(), dataId);
+			}
+		}
+}
+
+private void registerNacosListener(final String groupKey, final String dataKey) {
+		String key = NacosPropertySourceRepository.getMapKey(dataKey, groupKey);
+		Listener listener = listenerMap.computeIfAbsent(key,
+				lst -> new AbstractSharedListener() {
+					@Override
+					public void innerReceive(String dataId, String group,
+							String configInfo) {
+						refreshCountIncrement();
+						nacosRefreshHistory.addRefreshRecord(dataId, group, configInfo);
+						// todo feature: support single refresh for listening
+                          // 收到配置变更的回调时，发布 RefreshEvent 事件
+						applicationContext.publishEvent(
+								new RefreshEvent(this, null, "Refresh Nacos config"));
+						if (log.isDebugEnabled()) {
+							log.debug(String.format(
+									"Refresh Nacos config group=%s,dataId=%s,configInfo=%s",
+									group, dataId, configInfo));
+						}
+					}
+				});
+		try {
+			configService.addListener(dataKey, groupKey, listener);
+		}
+		catch (NacosException e) {
+			log.warn(String.format(
+					"register fail for nacos listener ,dataId=[%s],group=[%s]", dataKey,
+					groupKey), e);
+		}
+}
+```
+
+​		`RefreshEvent`事件的监听在`RefreshEventListener`中实现：
+
+```java
+// RefreshEventListener 类
+public void onApplicationEvent(ApplicationEvent event) {
+		if (event instanceof ApplicationReadyEvent) {
+			handle((ApplicationReadyEvent) event);
+		}
+		else if (event instanceof RefreshEvent) {
+			handle((RefreshEvent) event);
+		}
+}
+
+public void handle(RefreshEvent event) {
+		if (this.ready.get()) { // don't handle events before app is ready
+			log.debug("Event received " + event.getEventDesc());
+             // 完成配置的更新与应用
+			Set<String> keys = this.refresh.refresh();
+			log.info("Refresh keys changed: " + keys);
+		}
+}
+```
+
+
+
+### 长轮询
+
+​		客户端的长轮询定时任务是在`NacosFactory.createConfigService`构建`ConfigService`对象实例的时候启动的：
+
+```java
+// NacosFactory 类
+public static ConfigService createConfigService(String serverAddr) throws NacosException {
+        return ConfigFactory.createConfigService(serverAddr);
+}
+```
+
+```java
+// ConfigFactory 类
+public static ConfigService createConfigService(Properties properties) throws NacosException {
+        try {
+           	// 加载 NacosConfigService 类
+            Class<?> driverImplClass = Class.forName("com.alibaba.nacos.client.config.NacosConfigService");
+            // 反射实例化 NacosConfigService 对象
+            Constructor constructor = driverImplClass.getConstructor(Properties.class);
+            ConfigService vendorImpl = (ConfigService) constructor.newInstance(properties);
+            return vendorImpl;
+        } catch (Throwable e) {
+            throw new NacosException(NacosException.CLIENT_INVALID_PARAM, e);
+        }
+}
+    
+public static ConfigService createConfigService(String serverAddr) throws NacosException {
+        Properties properties = new Properties();
+        properties.put(PropertyKeyConst.SERVER_ADDR, serverAddr);
+        return createConfigService(properties);
+}
+```
+
+```java
+// NacosConfigService 类
+public NacosConfigService(Properties properties) throws NacosException {
+        ValidatorUtils.checkInitParam(properties);
+        
+        initNamespace(properties);
+        this.configFilterChainManager = new ConfigFilterChainManager(properties);
+        ServerListManager serverListManager = new ServerListManager(properties);
+        serverListManager.start();
+        
+        this.worker = new ClientWorker(this.configFilterChainManager, serverListManager, properties);
+        // will be deleted in 2.0 later versions
+    	// 初始化一个 ServerHttpAgent
+        agent = new ServerHttpAgent(serverListManager);
+        
+}
+```
+
+```java
+// ClientWorker 类
+public ClientWorker(final ConfigFilterChainManager configFilterChainManager, ServerListManager serverListManager,
+            final Properties properties) throws NacosException {
+        this.configFilterChainManager = configFilterChainManager;
+        
+        init(properties);
+        
+        agent = new ConfigRpcTransportClient(properties, serverListManager);
+	    // 用于实现客户端的定时长轮询功能。
+        ScheduledExecutorService executorService = Executors
+                .newScheduledThreadPool(ThreadUtils.getSuitableThreadCount(1), r -> {
+                    Thread t = new Thread(r);
+                    t.setName("com.alibaba.nacos.client.Worker");
+                    t.setDaemon(true);
+                    return t;
+                });
+        agent.setExecutor(executorService);
+        agent.start();
+        
+}
+```
+
+
+
+​		服务端的长轮询在`Nacos`源码的`ConfigController`下：
+
+```java
+// ConfigController 类
+// 客户端发起数据监听的接口
+@PostMapping("/listener")
+@Secured(action = ActionTypes.READ, signType = SignType.CONFIG)
+public void listener(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        
+        request.setAttribute("org.apache.catalina.ASYNC_SUPPORTED", true);
+    	// 获取客户端需要监听的可能发生变化的配置
+        String probeModify = request.getParameter("Listening-Configs");
+        if (StringUtils.isBlank(probeModify)) {
+            LOGGER.warn("invalid probeModify is blank");
+            throw new IllegalArgumentException("invalid probeModify");
+        }
+        
+        probeModify = URLDecoder.decode(probeModify, Constants.ENCODE);
+        
+    	// 计算 MD5 值
+        Map<String, String> clientMd5Map;
+        try {
+            clientMd5Map = MD5Util.getClientMd5Map(probeModify);
+        } catch (Throwable e) {
+            throw new IllegalArgumentException("invalid probeModify");
+        }
+        
+        // do long-polling
+    	// 执行长轮询请求
+        inner.doPollingConfig(request, response, clientMd5Map, probeModify.length());
+}
+```
+
+```java
+// ConfigServletInner 类
+public String doPollingConfig(HttpServletRequest request, HttpServletResponse response,
+            Map<String, String> clientMd5Map, int probeRequestSize) throws IOException {
+        
+        // Long polling.
+    	// 长轮询
+        if (LongPollingService.isSupportLongPolling(request)) {
+            longPollingService.addLongPollingClient(request, response, clientMd5Map, probeRequestSize);
+            return HttpServletResponse.SC_OK + "";
+        }
+        
+        // Compatible with short polling logic.
+    	// 兼容端轮询逻辑
+        List<String> changedGroups = MD5Util.compareMd5(request, response, clientMd5Map);
+        
+        // Compatible with short polling result.
+    	// 兼容短轮询 result
+        String oldResult = MD5Util.compareMd5OldResult(changedGroups);
+        String newResult = MD5Util.compareMd5ResultString(changedGroups);
+        
+        ...
+}
+```
+
+```java
+// 主要作用是把客户端的长轮询请求封装成 ClientPolling 交给 scheduler 执行
+public void addLongPollingClient(HttpServletRequest req, HttpServletResponse rsp, Map<String, String> clientMd5Map,
+            int probeRequestSize) {
+        // 获取客户端设置的超时时间
+        String str = req.getHeader(LongPollingService.LONG_POLLING_HEADER);
+        String noHangUpFlag = req.getHeader(LongPollingService.LONG_POLLING_NO_HANG_UP_HEADER);
+        String appName = req.getHeader(RequestUtil.CLIENT_APPNAME_HEADER);
+        String tag = req.getHeader("Vipserver-Tag");
+        int delayTime = SwitchService.getSwitchInteger(SwitchService.FIXED_DELAY_TIME, 500);
+        
+        // Add delay time for LoadBalance, and one response is returned 500 ms in advance to avoid client timeout.
+    	// 提前 500ms 响应，避免客户端超时
+        long timeout = Math.max(10000, Long.parseLong(str) - delayTime);
+        if (isFixedPolling()) {
+            timeout = Math.max(10000, getFixedPollingInterval());
+            // Do nothing but set fix polling timeout.
+        } else {
+            long start = System.currentTimeMillis();
+            List<String> changedGroups = MD5Util.compareMd5(req, rsp, clientMd5Map);
+            if (changedGroups.size() > 0) {
+                generateResponse(req, rsp, changedGroups);
+                LogUtil.CLIENT_LOG.info("{}|{}|{}|{}|{}|{}|{}", System.currentTimeMillis() - start, "instant",
+                        RequestUtil.getRemoteIp(req), "polling", clientMd5Map.size(), probeRequestSize,
+                        changedGroups.size());
+                return;
+            } else if (noHangUpFlag != null && noHangUpFlag.equalsIgnoreCase(TRUE_STR)) {
+                LogUtil.CLIENT_LOG.info("{}|{}|{}|{}|{}|{}|{}", System.currentTimeMillis() - start, "nohangup",
+                        RequestUtil.getRemoteIp(req), "polling", clientMd5Map.size(), probeRequestSize,
+                        changedGroups.size());
+                return;
+            }
+        }
+        String ip = RequestUtil.getRemoteIp(req);
+        
+        // Must be called by http thread, or send response.
+    	// 必须由 HTTP 线程调用，否则离开后容器会立即发送响应
+        final AsyncContext asyncContext = req.startAsync();
+        
+        // AsyncContext.setTimeout() is incorrect, Control by oneself
+        asyncContext.setTimeout(0L);
+        
+        ConfigExecutor.executeLongPolling(
+                new ClientLongPolling(asyncContext, clientMd5Map, ip, probeRequestSize, timeout, appName, tag));
+}
+```
+
+```java
+class ClientLongPolling implements Runnable {
+        
+        @Override
+        public void run() {
+            // 启动定时任务
+            asyncTimeoutFuture = ConfigExecutor.scheduleLongPolling(() -> {
+                try {
+                    getRetainIps().put(ClientLongPolling.this.ip, System.currentTimeMillis());
+
+                    // Delete subscriber's relations.
+                    // 删除订阅关系
+                    boolean removeFlag = allSubs.remove(ClientLongPolling.this);
+
+                    if (removeFlag) {
+                        if (isFixedPolling()) { // 比较 MD5 的值是否发生了变更
+                            LogUtil.CLIENT_LOG
+                                    .info("{}|{}|{}|{}|{}|{}", (System.currentTimeMillis() - createTime), "fix",
+                                            RequestUtil.getRemoteIp((HttpServletRequest) asyncContext.getRequest()),
+                                            "polling", clientMd5Map.size(), probeRequestSize);
+                            List<String> changedGroups = MD5Util
+                                    .compareMd5((HttpServletRequest) asyncContext.getRequest(),
+                                            (HttpServletResponse) asyncContext.getResponse(), clientMd5Map);
+                            if (changedGroups.size() > 0) {
+                                sendResponse(changedGroups); // 返回结果
+                            } else {
+                                sendResponse(null);
+                            }
+                        } else {
+                            LogUtil.CLIENT_LOG
+                                    .info("{}|{}|{}|{}|{}|{}", (System.currentTimeMillis() - createTime), "timeout",
+                                            RequestUtil.getRemoteIp((HttpServletRequest) asyncContext.getRequest()),
+                                            "polling", clientMd5Map.size(), probeRequestSize);
+                            sendResponse(null);
+                        }
+                    } else {
+                        LogUtil.DEFAULT_LOG.warn("client subsciber's relations delete fail.");
+                    }
+                } catch (Throwable t) {
+                    LogUtil.DEFAULT_LOG.error("long polling error:" + t.getMessage(), t.getCause());
+                }
+
+            }, timeoutTime, TimeUnit.MILLISECONDS);
+            
+            allSubs.add(this);
+        }
+    ...
+}
+```
+
+​		上面的过程，说明了如果配置没有发生变化，则客户端和服务端将在`30s`之内一直处于连接状态。而变更后的实时通知由`LongPollingService`完成：
+
+```java
+// LongPollingService 类
+public LongPollingService() {
+        allSubs = new ConcurrentLinkedQueue<>();
+        
+        ConfigExecutor.scheduleLongPolling(new StatTask(), 0L, 10L, TimeUnit.SECONDS);
+        
+        // Register LocalDataChangeEvent to NotifyCenter.
+        NotifyCenter.registerToPublisher(LocalDataChangeEvent.class, NotifyCenter.ringBufferSize);
+        
+        // Register A Subscriber to subscribe LocalDataChangeEvent.
+        NotifyCenter.registerSubscriber(new Subscriber() {
+            
+            @Override
+            public void onEvent(Event event) {
+                if (isFixedPolling()) {
+                    // Ignore.
+                } else {
+                    if (event instanceof LocalDataChangeEvent) {
+                        LocalDataChangeEvent evt = (LocalDataChangeEvent) event;
+                        ConfigExecutor.executeLongPolling(new DataChangeTask(evt.groupKey, evt.isBeta, evt.betaIps));
+                    }
+                }
+            }
+            
+            @Override
+            public Class<? extends Event> subscribeType() {
+                return LocalDataChangeEvent.class;
+            }
+        });        
+}
+```
+
+```java
+class DataChangeTask implements Runnable {
+        
+        @Override
+        public void run() {
+            try {
+                ConfigCacheService.getContentBetaMd5(groupKey);
+                // 遍历所有客户端长轮询
+                for (Iterator<ClientLongPolling> iter = allSubs.iterator(); iter.hasNext(); ) {
+                    ClientLongPolling clientSub = iter.next();
+                    // 客户端与服务端的配置不一致，则直接返回
+                    if (clientSub.clientMd5Map.containsKey(groupKey)) {
+                        // If published tag is not in the beta list, then it skipped.
+                        if (isBeta && !CollectionUtils.contains(betaIps, clientSub.ip)) {
+                            continue;
+                        }
+                        
+                        // If published tag is not in the tag list, then it skipped.
+                        if (StringUtils.isNotBlank(tag) && !tag.equals(clientSub.tag)) {
+                            continue;
+                        }
+                        
+                        getRetainIps().put(clientSub.ip, System.currentTimeMillis());
+                        // 删除订阅关系
+                        iter.remove(); // Delete subscribers' relationships.
+                        
+                        LogUtil.CLIENT_LOG
+                                .info("{}|{}|{}|{}|{}|{}|{}", (System.currentTimeMillis() - changeTime), "in-advance",
+                                        RequestUtil
+                                                .getRemoteIp((HttpServletRequest) clientSub.asyncContext.getRequest()),
+                                        "polling", clientSub.clientMd5Map.size(), clientSub.probeRequestSize, groupKey);
+                        clientSub.sendResponse(Arrays.asList(groupKey));
+                    }
+                }
+                
+            } catch (Throwable t) {
+                LogUtil.DEFAULT_LOG.error("data change error: {}", ExceptionUtil.getStackTrace(t));
+            }
+        }
+    ...
+}
+```
 
